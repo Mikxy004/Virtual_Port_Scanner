@@ -95,6 +95,7 @@ setInterval(updateProgress, 500);
 <th>Port</th>
 <th>Status</th>
 <th>Service</th>
+<th>Banner</th>
 </tr>
 
 {% for r in results %}
@@ -103,6 +104,7 @@ setInterval(updateProgress, 500);
 <td>{{ r.port }}</td>
 <td>{{ r.status }}</td>
 <td>{{ r.service }}</td>
+<td>{{ r.banner }}</td>
 </tr>
 {% endfor %}
 
@@ -116,6 +118,27 @@ setInterval(updateProgress, 500);
 </body>
 </html>
 """
+def grab_banner(ip, port):
+    try:
+        s = socket.socket()
+        s.settimeout(1)
+        s.connect((ip, port))
+
+        try:
+            banner = s.recv(1024).decode().strip()
+        except:
+            banner = ""
+
+        if port in [80, 8080, 8000]:
+            s.send(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            banner = s.recv(1024).decode(errors="ignore")
+
+        s.close()
+
+        return banner if banner else "Unknown"
+
+    except:
+        return "Unknown"
 
 def scan_ports(target):
 
@@ -135,11 +158,15 @@ def scan_ports(target):
             result = s.connect_ex((target, port))
 
             if result == 0:
+
+                banner = grab_banner(target, port)
+
                 results.append({
                     "ip": target,
                     "port": port,
                     "status": "Open",
-                    "service": services.get(port,"Unknown")
+                    "service": services.get(port,"Unknown"),
+                    "banner": banner[:50]
                 })
 
             s.close()
