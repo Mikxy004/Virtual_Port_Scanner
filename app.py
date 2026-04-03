@@ -1,9 +1,32 @@
+import sqlite3
+from datetime import datetime
 import ipaddress
 from flask import Flask, request, render_template_string, send_file
 import socket
 import threading
 from queue import Queue
 import json
+
+def init_db():
+    conn = sqlite3.connect("scans.db")
+    c = conn.cursor()
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS scans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target TEXT,
+        ip TEXT,
+        port INTEGER,
+        status TEXT,
+        service TEXT,
+        banner TEXT,
+        timestamp TEXT,
+        risk TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
 
 app = Flask(__name__)
 
@@ -54,6 +77,25 @@ height:20px;
 background:#00ff9f;
 width:0%;
 }
+
+h3{
+color:#00ffaa;
+margin-top:30px;
+}
+
+.high {
+color: red;
+font-weight: bold;
+}
+
+.medium {
+color: orange;
+font-weight: bold;
+}
+
+.low {
+color: #00ff9f;
+}
 </style>
 
 <script>
@@ -84,36 +126,56 @@ setInterval(updateProgress, 500);
 <div class="bar" id="bar"></div>
 </div>
 
-{% if results %}
+{% if history %}
 
-<h2>Results</h2>
+<h2>Scan History</h2>
+
+{% for timestamp, scans in history.items() %}
+
+<h3> Scan Time: {{ timestamp }}</h3>
 
 <table>
-
 <tr>
-<th>IP Address</th>
+<th>Target</th>
+<th>IP</th>
 <th>Port</th>
 <th>Status</th>
 <th>Service</th>
 <th>Banner</th>
+<th>Risk</th>
 </tr>
 
-{% for r in results %}
+{% for h in scans %}
 <tr>
-<td>{{ r.ip }}</td>
-<td>{{ r.port }}</td>
-<td>{{ r.status }}</td>
-<td>{{ r.service }}</td>
-<td>{{ r.banner }}</td>
+<td>{{ h[0] }}</td>
+<td>{{ h[1] }}</td>
+<td>{{ h[2] }}</td>
+<td>{{ h[3] }}</td>
+<td>{{ h[4] }}</td>
+<td>{{ h[5] }}</td>
+<td>
+    {% set risk = h[7] if h|length > 7 else "LOW" %}
+
+    {% if risk == "HIGH" %}
+        <span class="high">🔴 HIGH</span>
+    {% elif risk == "MEDIUM" %}
+        <span class="medium">🟠 MEDIUM</span>
+    {% else %}
+        <span class="low">🟢 LOW</span>
+    {% endif %}
+</td>
 </tr>
 {% endfor %}
 
 </table>
-
 <br>
-<a href="/download">Download Report</a>
+
+{% endfor %}
 
 {% endif %}
+
+<a href="/download">Download Report</a>
+
 
 </body>
 </html>
@@ -166,7 +228,8 @@ def scan_ports(target):
                     "port": port,
                     "status": "Open",
                     "service": services.get(port,"Unknown"),
-                    "banner": banner[:50]
+                    "banner": banner,
+                    "risk": get_risk_level(port)
                 })
 
             s.close()
@@ -205,6 +268,17 @@ def scan_network(network):
 
     return all_results
 
+def get_risk_level(port):
+
+    high_risk = [21, 23, 25, 110, 445]
+    medium_risk = [22, 53, 139, 143]
+
+    if port in high_risk:
+        return "HIGH"
+    elif port in medium_risk:
+        return "MEDIUM"
+    else:
+        return "LOW"
 
 @app.route("/", methods=["GET", "POST"])
 def home():
@@ -221,8 +295,61 @@ def home():
         else:
             results = scan_ports(target)
 
-    return render_template_string(HTML, results=results)
+        save_results(target, results)
 
+    history = get_history()
+
+    return render_template_string(HTML, results=results, history=history)
+
+def save_results(target, results):
+
+    conn = sqlite3.connect("scans.db")
+    c = conn.cursor()
+
+    scan_id = datetime.now().strftime("%Y%m%d%H%M%S")
+
+    for r in results:
+        c.execute("""
+        INSERT INTO scans (target, ip, port, status, service, banner, timestamp, risk)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            target,
+            r.get("ip"),
+            r.get("port"),
+            r.get("status"),
+            r.get("service"),
+            r.get("banner"),
+            scan_id,
+            r.get("risk")
+        ))
+
+    conn.commit()
+    conn.close()
+
+def get_history():
+
+    conn = sqlite3.connect("scans.db")
+    c = conn.cursor()
+
+    c.execute("""
+    SELECT target, ip, port, status, service, banner, timestamp 
+    FROM scans
+    ORDER BY timestamp DESC
+    """)
+
+    rows = c.fetchall()
+    conn.close()
+
+    grouped = {}
+
+    for row in rows:
+        ts = row[6]
+
+        if ts not in grouped:
+            grouped[ts] = []
+
+        grouped[ts].append(row)
+    return grouped
 
 @app.route("/progress")
 def progress():
@@ -238,6 +365,7 @@ def download():
 
 
 if __name__=="__main__":
-    app.run(host="0.0.0.0", port=5000)
+    init_db()
+    app.run(host="0.0.0.0", port=5000, debug=True)
 
 
